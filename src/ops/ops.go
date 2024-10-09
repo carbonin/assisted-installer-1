@@ -125,19 +125,68 @@ func (o *ops) SystemctlAction(action string, args ...string) error {
 }
 
 func (o *ops) WriteImageToDisk(liveLogger io.Writer, ignitionPath string, device string, extraArgs []string) error {
-	allArgs := installerArgs(ignitionPath, device, extraArgs)
-	o.log.Infof("Writing image and ignition to disk with arguments: %v", allArgs)
-
-	installerExecutable := coreosInstallerExecutable
-	if o.installerConfig.DryRunEnabled {
-		// In dry run, we use an executable called dry-installer rather than coreos-installer.
-		// This executable is expected to pretend to be doing coreos-installer stuff and print fake
-		// progress. It's up to the dry-mode user to make sure such executable is available in PATH
-		installerExecutable = dryRunCoreosInstallerExecutable
+	// remount everything first so we don't have to care about it later
+	// hopefully this persists through the later commands
+	out, err := o.ExecPrivilegeCommand(liveLogger, "mount", "/sysroot", "-o", "remount,rw")
+	if err != nil {
+		return errors.Wrapf(err, "failed to remount sysroot. output: %s", out)
+	}
+	out, err = o.ExecPrivilegeCommand(liveLogger, "mount", "/boot", "-o", "remount,rw")
+	if err != nil {
+		return errors.Wrapf(err, "failed to remount boot. output: %s", out)
 	}
 
-	_, err := o.ExecPrivilegeCommand(liveLogger, installerExecutable, allArgs...)
-	return err
+	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "admin", "stateroot-init", "install")
+	if err != nil {
+		return errors.Wrapf(err, "failed creating new stateroot. output: %s", out)
+	}
+
+	// this is the rhel-coreos image for quay.io/openshift-release-dev/ocp-release:4.16.16-x86_64
+	// TODO: get this from release image or from install step info
+	ostreeReleasePullSpec := "ostree-unverified-registry:quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:d21f2ed754a66d18b0a13a59434fa4dc36abd4320e78f3be83a3e29e21e3c2f9"
+	// can /ostree/repo ever be different?
+	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "container", "unencapsulate", "--authfile", "/root/.docker/config.json", "--quiet", "--repo", "/ostree/repo", ostreeReleasePullSpec)
+	if err != nil {
+		return errors.Wrapf(err, "failed to unencapsulate rhcos payload image. output: %s", out)
+	}
+	outputParts := strings.Split(out, " ")
+	if len(outputParts) != 2 {
+		return fmt.Errorf("got unexpected output from unencapsulate: \"%s\"", outputParts)
+	}
+
+	commit := outputParts[1]
+	liveLogger.Write([]byte(fmt.Sprintf("imported commit %s", commit)))
+
+	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "admin", "deploy", "--stateroot", "install", commit)
+	if err != nil {
+		return errors.Wrapf(err, "failed to deploy commit to stateroot. output: %s", out)
+	}
+
+	// at this point we should have a boot entry
+
+	out, err = o.ExecPrivilegeCommand(liveLogger, "mkdir", "/boot/ignition")
+	if err != nil {
+		return errors.Wrapf(err, "failed to create ignition directory. output: %s", out)
+	}
+
+	out, err = o.ExecPrivilegeCommand(liveLogger, "cp", ignitionPath, "/boot/ignition/config.ign")
+	if err != nil {
+		return errors.Wrapf(err, "failed to copy ignition file. output: %s", out)
+	}
+
+	out, err = o.ExecPrivilegeCommand(liveLogger, "touch", "/boot/ignition.firstboot")
+	if err != nil {
+		return errors.Wrapf(err, "failed to write ignition marker file. output: %s", out)
+	}
+
+	//TODO: find this path better
+	out, err = o.ExecPrivilegeCommand(liveLogger, "sed", "-i", "/^options/ s/$/ ignition.firstboot ignition.platform.id=metal/", "/boot/loader/entries/ostree-2.conf")
+	if err != nil {
+		return errors.Wrapf(err, "failed to edit boot loader entry options. output: %s", out)
+	}
+
+	// might need to care about extraArgs here for something like `--append-karg ip=enp1s0:dhcp`
+	return nil
 }
 
 func (o *ops) EvaluateDiskSymlink(device string) string {
