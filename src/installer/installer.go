@@ -152,11 +152,11 @@ func (i *installer) InstallNode() error {
 		}
 	}
 
-	if i.EnableSkipMcoReboot {
-		i.skipMcoReboot(ignitionPath)
-	}
-
 	/*
+		if i.EnableSkipMcoReboot {
+			i.skipMcoReboot(ignitionPath)
+		}
+
 		if err = i.ops.SetBootOrder(i.Device); err != nil {
 			i.log.WithError(err).Warnf("Failed to set boot order")
 			// Ignore the error for now so it doesn't fail the installation in case it fails
@@ -990,7 +990,7 @@ func RunInstaller(installerConfig *config.Config, logger *logrus.Logger) error {
 	)
 
 	// Try to format requested disks. May fail formatting some disks, this is not an error.
-	ai.FormatDisks()
+	//ai.FormatDisks()
 
 	if err = ai.InstallNode(); err != nil {
 		ai.UpdateHostInstallProgress(models.HostStageFailed, err.Error())

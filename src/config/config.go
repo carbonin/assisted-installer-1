@@ -76,7 +76,7 @@ func (c *Config) ProcessArgs(args []string) {
 	flagSet.BoolVar(&c.CheckClusterVersion, "check-cluster-version", false, "Do not monitor CVO")
 	flagSet.StringVar(&c.MustGatherImage, "must-gather-image", "", "Custom must-gather image")
 	flagSet.Var(&c.DisksToFormat, "format-disk", "Disk to format. Can be specified multiple times")
-	flagSet.BoolVar(&c.SkipInstallationDiskCleanup, "skip-installation-disk-cleanup", false, "Skip installation disk cleanup gives disk management to coreos-installer in case needed")
+	flagSet.BoolVar(&c.SkipInstallationDiskCleanup, "skip-installation-disk-cleanup", true, "Skip installation disk cleanup gives disk management to coreos-installer in case needed")
 	flagSet.BoolVar(&c.EnableSkipMcoReboot, "enable-skip-mco-reboot", false, "indicate assisted installer to generate settings to match MCO requirements for skipping reboot after firstboot")
 	flagSet.BoolVar(&c.NotifyNumReboots, "notify-num-reboots", false, "indicate number of reboots should be notified as event")
 

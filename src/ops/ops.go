@@ -180,7 +180,7 @@ func (o *ops) WriteImageToDisk(liveLogger io.Writer, ignitionPath string, device
 	}
 
 	//TODO: find this path better
-	out, err = o.ExecPrivilegeCommand(liveLogger, "sed", "-i", "/^options/ s/$/ ignition.firstboot ignition.platform.id=metal/", "/boot/loader/entries/ostree-2.conf")
+	out, err = o.ExecPrivilegeCommand(liveLogger, "sed", "-i", "/^options/ s/$/ $ignition_firstboot ignition.platform.id=metal/", "/boot/loader/entries/ostree-2.conf")
 	if err != nil {
 		return errors.Wrapf(err, "failed to edit boot loader entry options. output: %s", out)
 	}
