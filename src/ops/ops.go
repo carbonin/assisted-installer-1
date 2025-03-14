@@ -83,6 +83,7 @@ const (
 	controllerDeployPodTemplate    = "assisted-installer-controller-pod.yaml.template"
 	renderedControllerSecret       = "assisted-installer-controller-secret.yaml"
 	controllerDeploySecretTemplate = "assisted-installer-controller-secret.yaml.template"
+	assistedInstallOSTreeRefName   = "assisted-installer/install-image"
 	MustGatherFileName             = "must-gather.tar.gz"
 )
 
@@ -126,24 +127,49 @@ func (o *ops) SystemctlAction(action string, args ...string) error {
 	return errors.Wrapf(err, "Failed executing systemctl %s %s", action, args)
 }
 
-var ostreeOutputRegex = regexp.MustCompile(`Imported: (\w+)`)
-
 func (o *ops) importOSTreeCommit(liveLogger io.Writer) (string, error) {
 	ostreeReleasePullSpec := fmt.Sprintf("ostree-unverified-registry:%s", o.installerConfig.CoreosImage)
-	out, err := o.ExecPrivilegeCommand(liveLogger, "ostree", "container", "unencapsulate", "--authfile", dockerConfigFile, "--quiet", "--repo", "/ostree/repo", ostreeReleasePullSpec)
+	out, err := o.ExecPrivilegeCommand(liveLogger, "ostree", "container", "image", "pull", "--authfile", dockerConfigFile, "/ostree/repo", ostreeReleasePullSpec)
 	if err != nil {
-		return "", errors.Wrapf(err, "failed to unencapsulate rhcos payload image: %s", out)
+		return "", errors.Wrapf(err, "failed to pull rhcos payload image: %s", out)
 	}
 
-	matches := ostreeOutputRegex.FindStringSubmatch(out)
-	if matches == nil {
-		return "", fmt.Errorf("got unexpected output from unencapsulate: \"%s\"", out)
+	o.log.Info("NC: running ostree refs")
+
+	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "refs", "--repo", "/ostree/repo")
+	if err != nil {
+		return "", errors.Wrapf(err, "failed to list refs in repo")
+	}
+	refs := strings.Split(out, "\n")
+	dockerRefs := []string{}
+	for _, ref := range refs {
+		if strings.HasPrefix(ref, "ostree/container/image/docker") {
+			dockerRefs = append(dockerRefs, ref)
+		}
+	}
+	if numRefs := len(dockerRefs); numRefs != 1 {
+		return "", fmt.Errorf("found %d matching ostree refs, expected only 1: ref list: %v", numRefs, dockerRefs)
 	}
 
-	return matches[1], nil
+	o.log.Infof("NC: found ref %s", dockerRefs[0])
+
+	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "refs", "--repo", "/ostree/repo", dockerRefs[0], "--create", assistedInstallOSTreeRefName)
+	if err != nil {
+		return "", errors.Wrapf(err, "failed to create ref, output: %s", out)
+	}
+
+	o.log.Infof("NC: created assisted install ref")
+
+	refFile := path.Join("/ostree/repo/refs/heads", assistedInstallOSTreeRefName)
+	out, err = o.ExecPrivilegeCommand(liveLogger, "cat", refFile)
+	if err != nil {
+		return "", errors.Wrapf(err, "failed to read commit from ref file %s", refFile)
+	}
+
+	return strings.TrimSpace(out), nil
 }
 
-func ostreeArgs(commit string, installerArgs []string) []string {
+func ostreeArgs(ref string, installerArgs []string) []string {
 	ostreeArgs := []string{"admin", "deploy",
 		"--stateroot", "install",
 		"--karg", "$ignition_firstboot",
@@ -161,7 +187,7 @@ func ostreeArgs(commit string, installerArgs []string) []string {
 			continue
 		}
 	}
-	return append(ostreeArgs, commit)
+	return append(ostreeArgs, ref)
 }
 
 func (o *ops) WriteImageToExistingRoot(liveLogger io.Writer, ignitionPath string, installerArgs []string) error {
@@ -174,6 +200,19 @@ func (o *ops) WriteImageToExistingRoot(liveLogger io.Writer, ignitionPath string
 		return errors.Wrapf(err, "failed to remount boot: %s", out)
 	}
 
+	// ostree refs --repo "${ostree_repo}" --delete coreos/node-image
+	o.log.Info("NC: removing node image refs")
+	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "refs", "--repo", "/ostree/repo", "--delete", "coreos/node-image")
+	if err != nil {
+		return errors.Wrapf(err, "failed deleting the coreos node image ref: %s", out)
+	}
+	// touch "${ostree_checkout}"
+	o.log.Info("NC: updating node image checkout")
+	out, err = o.ExecPrivilegeCommand(liveLogger, "touch", "/ostree/repo/tmp/node-image")
+	if err != nil {
+		return errors.Wrapf(err, "failed to update temp node image checkout: %s", out)
+	}
+
 	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "admin", "stateroot-init", "install")
 	if err != nil {
 		return errors.Wrapf(err, "failed creating new stateroot: %s", out)
@@ -183,11 +222,15 @@ func (o *ops) WriteImageToExistingRoot(liveLogger io.Writer, ignitionPath string
 	if err != nil {
 		return err
 	}
-	o.log.Infof("imported commit %s", commit)
 
 	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", ostreeArgs(commit, installerArgs)...)
 	if err != nil {
 		return errors.Wrapf(err, "failed to deploy commit to stateroot: %s", out)
+	}
+
+	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "refs", "--repo", "/ostree/repo", "--delete", assistedInstallOSTreeRefName)
+	if err != nil {
+		return errors.Wrapf(err, "failed to delete ref, output: %s", out)
 	}
 
 	if slices.Contains(installerArgs, "--copy-network") || slices.Contains(installerArgs, "-n") {
