@@ -144,10 +144,6 @@ func (i *installer) InstallNode() error {
 
 	}
 
-	if err = i.writeImageToDisk(ignitionPath); err != nil {
-		return err
-	}
-
 	if i.Config.Role == string(models.HostRoleWorker) {
 		// Wait for 2 masters to be ready before rebooting
 		if err = i.workerWaitFor2ReadyMasters(ctx); err != nil {
@@ -185,6 +181,10 @@ func (i *installer) InstallNode() error {
 		if err = i.waitForWorkers(ctx); err != nil {
 			return err
 		}
+	}
+
+	if err = i.writeImageToDisk(ignitionPath); err != nil {
+		return err
 	}
 
 	//upload host logs and report log status before reboot

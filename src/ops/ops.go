@@ -200,17 +200,19 @@ func (o *ops) WriteImageToExistingRoot(liveLogger io.Writer, ignitionPath string
 		return errors.Wrapf(err, "failed to remount boot: %s", out)
 	}
 
-	// ostree refs --repo "${ostree_repo}" --delete coreos/node-image
-	o.log.Info("NC: removing node image refs")
-	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "refs", "--repo", "/ostree/repo", "--delete", "coreos/node-image")
-	if err != nil {
-		return errors.Wrapf(err, "failed deleting the coreos node image ref: %s", out)
-	}
-	// touch "${ostree_checkout}"
-	o.log.Info("NC: updating node image checkout")
-	out, err = o.ExecPrivilegeCommand(liveLogger, "touch", "/ostree/repo/tmp/node-image")
-	if err != nil {
-		return errors.Wrapf(err, "failed to update temp node image checkout: %s", out)
+	if o.FileExists("/ostree/repo/refs/heads/coreos/node-image") {
+		// ostree refs --repo "${ostree_repo}" --delete coreos/node-image
+		o.log.Info("NC: removing node image refs")
+		out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "refs", "--repo", "/ostree/repo", "--delete", "coreos/node-image")
+		if err != nil {
+			return errors.Wrapf(err, "failed deleting the coreos node image ref: %s", out)
+		}
+		// touch "${ostree_checkout}"
+		o.log.Info("NC: updating node image checkout")
+		out, err = o.ExecPrivilegeCommand(liveLogger, "touch", "/ostree/repo/tmp/node-image")
+		if err != nil {
+			return errors.Wrapf(err, "failed to update temp node image checkout: %s", out)
+		}
 	}
 
 	out, err = o.ExecPrivilegeCommand(liveLogger, "ostree", "admin", "stateroot-init", "install")

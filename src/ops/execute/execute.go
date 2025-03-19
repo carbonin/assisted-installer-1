@@ -90,6 +90,9 @@ func (e *executor) execCommand(liveLogger io.Writer, cmd *exec.Cmd) (string, err
 }
 
 func (e *executor) ExecCommand(liveLogger io.Writer, command string, args ...string) (string, error) {
+	if liveLogger != nil && args != nil {
+		liveLogger.Write([]byte(fmt.Sprintf("Executing command '%s %s'", command, strings.Join(args, " "))))
+	}
 	return e.execCommand(liveLogger, exec.Command(command, args...))
 }
 
