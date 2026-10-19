@@ -1159,19 +1159,28 @@ func (o *ops) calculateFreePercent(device string, requiredSize *int64) (int64, e
 }
 
 func (o *ops) OverwriteOsImage(osImage, device string, extraArgs []string) error {
-	type cmd struct {
-		command string
-		args    []string
-	}
+	// The installer runs with --pid=host; /proc/1/root exposes the host mounts.
+	return o.overwriteOsImage("/proc/1/root/mnt/boot", osImage, device, extraArgs)
+}
 
-	makecmd := func(commad string, args ...string) *cmd {
-		return &cmd{command: commad, args: args}
+func (o *ops) overwriteOsImage(bootDir, osImage, device string, extraArgs []string) error {
+	makecmd := func(command string, args ...string) func() error {
+		return func() error {
+			o.log.Infof("Running %s with args %+v", command, args)
+			if err := utils.Retry(3, 5*time.Second, o.log, func() error {
+				_, err := o.ExecPrivilegeCommand(nil, command, args...)
+				return err
+			}); err != nil {
+				return errors.Wrapf(err, "failed to run %s with args %+v", command, args)
+			}
+			return nil
+		}
 	}
 	freePercent, err := o.calculateFreePercent(device, nil)
 	if err != nil {
 		return err
 	}
-	var growpartcmd *cmd
+	var growpartcmd func() error
 	if freePercent > 0 {
 		growpartcmd = makecmd("growpart", fmt.Sprintf("--free-percent=%d", freePercent), device, "4")
 	} else {
@@ -1192,7 +1201,7 @@ func (o *ops) OverwriteOsImage(osImage, device string, extraArgs []string) error
 		return errors.Wrapf(err, "failed to find partition 3 for device %s", device)
 	}
 
-	cmds := []*cmd{
+	cmds := []func() error{
 		makecmd("mount", partition4, "/mnt"),
 		makecmd("mount", partition3, "/mnt/boot"),
 		growpartcmd,
@@ -1201,36 +1210,33 @@ func (o *ops) OverwriteOsImage(osImage, device string, extraArgs []string) error
 		// On 4.14 ostree command fails if selinux is not disabled
 		// TODO: find a way to avoid disabling selinux
 		makecmd("setenforce", "0"),
-		makecmd("ostree",
-			append(append([]string{}, "container",
-				"image",
-				"deploy",
-				"--sysroot",
-				"/mnt",
-				"--authfile",
-				dockerConfigFile,
-				"--imgref",
-				"ostree-unverified-registry:"+osImage,
-				"--karg",
-				o.ignitionPlatformId(),
-				"--karg",
-				"$ignition_firstboot",
-				"--stateroot",
-				"rhcos"), extraArgs...)...,
-		),
+		func() error {
+			return o.preserveInitrdNetwork(bootDir, makecmd("ostree",
+				append(append([]string{}, "container",
+					"image",
+					"deploy",
+					"--sysroot",
+					"/mnt",
+					"--authfile",
+					dockerConfigFile,
+					"--imgref",
+					"ostree-unverified-registry:"+osImage,
+					"--karg",
+					o.ignitionPlatformId(),
+					"--karg",
+					"$ignition_firstboot",
+					"--stateroot",
+					"rhcos"), extraArgs...)...,
+			))
+		},
 		makecmd("fsfreeze", "--freeze", "/mnt/boot"),
 		makecmd("umount", "/mnt/boot"),
 		makecmd("fsfreeze", "--freeze", "/mnt"),
 		makecmd("umount", "/mnt"),
 	}
-	for i := range cmds {
-		c := cmds[i]
-		o.log.Infof("Running %s with args %+v", c.command, c.args)
-		if err := utils.Retry(3, 5*time.Second, o.log, func() (ret error) {
-			_, ret = o.ExecPrivilegeCommand(nil, c.command, c.args...)
-			return
-		}); err != nil {
-			return errors.Wrapf(err, "failed to run %s with args %+v", c.command, c.args)
+	for _, run := range cmds {
+		if err := run(); err != nil {
+			return err
 		}
 	}
 	return nil

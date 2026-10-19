@@ -460,8 +460,12 @@ var _ = Describe("overwrite OS image", func() {
 		o = NewOpsWithConfig(conf, l, execMock)
 	})
 
-	mockPrivileged := func(command string, args ...string) {
-		execMock.EXPECT().ExecCommandWithOptions(nil, command, args, gomock.Any()).Times(1)
+	AfterEach(func() {
+		ctrl.Finish()
+	})
+
+	mockPrivileged := func(command string, args ...string) *gomock.Call {
+		return execMock.EXPECT().ExecCommandWithOptions(nil, command, args, gomock.Any()).Times(1)
 	}
 	// Helper function to generate correct partition names for all device types
 	getPartitionName := func(deviceName, partNum string) string {
@@ -508,6 +512,12 @@ var _ = Describe("overwrite OS image", func() {
 			"--karg",
 			"abc",
 		}
+		bootDir, err := os.MkdirTemp("", "overwrite-boot-")
+		Expect(err).NotTo(HaveOccurred())
+		defer os.RemoveAll(bootDir)
+		Expect(os.MkdirAll(filepath.Join(bootDir, "loader/entries"), 0o700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(bootDir, "loader/entries/ostree-1-rhcos.conf"),
+			[]byte("initrd /ostree/old/initramfs.img\n"), 0o600)).To(Succeed())
 		mockPrivileged("cat", "/proc/cmdline")
 		mockPrivileged("uname", "-m")
 		mockPrivileged("mount", part4, "/mnt")
@@ -515,6 +525,8 @@ var _ = Describe("overwrite OS image", func() {
 		mockPrivileged("growpart", "--free-percent=92", device, "4")
 		mockPrivileged("xfs_growfs", "/mnt")
 		mockPrivileged("setenforce", "0")
+		unwrap := execMock.EXPECT().ExecCommandWithOptions(nil, coreosInstallerExecutable,
+			gomock.Any(), gomock.Any()).Return("Error: No embedded network settings.", fmt.Errorf("exit status 1"))
 		mockPrivileged("ostree",
 			"container",
 			"image",
@@ -532,12 +544,12 @@ var _ = Describe("overwrite OS image", func() {
 			"--stateroot",
 			"rhcos",
 			"--karg",
-			"abc")
+			"abc").After(unwrap)
 		mockPrivileged("fsfreeze", "--freeze", "/mnt/boot")
 		mockPrivileged("umount", "/mnt/boot")
 		mockPrivileged("fsfreeze", "--freeze", "/mnt")
 		mockPrivileged("umount", "/mnt")
-		err := o.OverwriteOsImage(osImage, device, extraArgs)
+		err = o.(*ops).overwriteOsImage(bootDir, osImage, device, extraArgs)
 		Expect(err).ToNot(HaveOccurred())
 	}
 	It("overwrite OS image - sda", func() {
